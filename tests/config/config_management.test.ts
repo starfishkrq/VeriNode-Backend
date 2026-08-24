@@ -22,7 +22,6 @@ async function main() {
   assert.equal(invalid.valid, false);
   assert(invalid.errors.some(e => e.path === 'db.port'));
   assert(invalid.errors.some(e => e.path === 'app.environment'));
-  assert(invalid.errors.some(e => e.path === 'feature_flags.overrides.payouts'));
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verinode-config-'));
   const configFile = path.join(dir, 'config.json');

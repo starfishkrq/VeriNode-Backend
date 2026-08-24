@@ -1,0 +1,6 @@
+# Test fixtures and binary assets that may exceed the 1 MB pre-commit limit.
+# Files matched here are exempt from the check-large-files hook.
+tests/fixtures/**    test-fixture
+tests/**/fixtures/** test-fixture
+*.pem                test-fixture
+*.p12                test-fixture

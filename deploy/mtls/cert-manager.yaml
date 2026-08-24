@@ -12,7 +12,7 @@ metadata:
   namespace: cert-manager
 spec:
   isCA: true
-  commonName: verinode.internal
+  commonName: verinode.labs
   secretName: verinode-internal-root-ca
   duration: 8760h
   renewBefore: 720h
@@ -31,6 +31,10 @@ spec:
   ca:
     secretName: verinode-internal-root-ca
 ---
+# Workload certificate for verinode-backend with SPIFFE identity using the
+# verinode.labs trust domain:  spiffe://verinode.labs/{service_name}/{pod_id}
+# The pod_id component is resolved at admission time via the Downward API;
+# the cert-manager URI SAN uses the service-account path as a stable prefix.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -53,4 +57,11 @@ spec:
     - server auth
     - client auth
   uris:
+    # Primary identity: verinode.labs SPIFFE format  spiffe://verinode.labs/{service_name}/{pod_id}
+    # The wildcard pod_id suffix is not supported in cert-manager URIs directly;
+    # workloads use the SPIFFE Workload API (SPIRE / step-ca) to mint per-pod
+    # certificates at runtime.  This static cert covers the service-level identity.
+    - spiffe://verinode.labs/verinode-backend/default
+    # Fallback cluster.local SPIFFE ID for mesh sidecars that use the Kubernetes
+    # service-account trust domain (Istio / Linkerd).
     - spiffe://cluster.local/ns/verinode/sa/verinode-backend

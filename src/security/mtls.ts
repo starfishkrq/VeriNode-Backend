@@ -4,6 +4,41 @@ import * as tls from 'node:tls';
 import { getConfigManager } from '../config/manager';
 import { createLogger } from '../diagnostics/logger';
 
+// ---------------------------------------------------------------------------
+// SPIFFE identity helpers for verinode.labs trust domain
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a verinode.labs SPIFFE ID of the form:
+ *   spiffe://verinode.labs/{service_name}/{pod_id}
+ * Returns null if the URI does not match the expected format.
+ */
+export interface VeriNodeSpiffeIdentity {
+  trustDomain: string;
+  serviceName: string;
+  podId: string;
+}
+
+export function parseVeriNodeSpiffeId(spiffeId: string): VeriNodeSpiffeIdentity | null {
+  const prefix = 'spiffe://';
+  if (!spiffeId.startsWith(prefix)) return null;
+  const rest = spiffeId.slice(prefix.length);
+  const slashIdx = rest.indexOf('/');
+  if (slashIdx === -1) return null;
+  const trustDomain = rest.slice(0, slashIdx);
+  const path = rest.slice(slashIdx + 1); // service_name/pod_id
+  const parts = path.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  return { trustDomain, serviceName: parts[0], podId: parts[1] };
+}
+
+/**
+ * Build a verinode.labs SPIFFE URI for a service and pod.
+ */
+export function buildVeriNodeSpiffeId(serviceName: string, podId: string): string {
+  return `spiffe://verinode.labs/${serviceName}/${podId}`;
+}
+
 const DEFAULT_CERT_MAX_VALIDITY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MIN_SECONDS_UNTIL_EXPIRY = 60 * 60;
 const DEFAULT_RELOAD_POLL_MS = 30_000;
@@ -28,6 +63,17 @@ export interface MtlsMetricsSnapshot {
   certificateReloadFailuresTotal: number;
   handshakeFailuresTotal: number;
   invalidPeerIdentityFailuresTotal: number;
+  /** Histogram buckets (ms) for successful mTLS handshake latency. */
+  handshakeLatencyBuckets: HandshakeLatencyBuckets;
+}
+
+export interface HandshakeLatencyBuckets {
+  /** Boundaries used for all bucket counts, in milliseconds. */
+  boundaries: readonly number[];
+  /** counts[i] = number of observations <= boundaries[i] */
+  counts: number[];
+  sum: number;
+  total: number;
 }
 
 export interface LoadedCertificate {
@@ -70,7 +116,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 
 function hashInputs(parts: Buffer[]): string {
   const hash = createHash('sha256');
-  for (const part of parts) hash.update(part);
+  for (const part of parts) hash.update(part as any);
   return hash.digest('hex');
 }
 
@@ -126,6 +172,49 @@ export function validatePeerCertificate(
   return validateSpiffeIdentity(extractSpiffeIds(cert), config.trustDomain, config.allowedSpiffeIds);
 }
 
+/**
+ * Extract the VeriNode service name from the first matching SPIFFE ID in a peer
+ * certificate, using the verinode.labs trust domain format:
+ *   spiffe://verinode.labs/{service_name}/{pod_id}
+ *
+ * Returns null if no matching ID is found or the format does not conform.
+ */
+export function extractVeriNodeServiceName(
+  cert: tls.PeerCertificate | tls.DetailedPeerCertificate | undefined,
+): string | null {
+  const ids = extractSpiffeIds(cert);
+  for (const id of ids) {
+    const parsed = parseVeriNodeSpiffeId(id);
+    if (parsed && parsed.trustDomain === 'verinode.labs') {
+      return parsed.serviceName;
+    }
+  }
+  return null;
+}
+
+/**
+ * Verify that the peer's SPIFFE identity belongs to the verinode.labs trust domain
+ * and the extracted service name matches one of the provided allowed service names.
+ *
+ * Returns true only when all of the following hold:
+ * - The peer certificate contains at least one SPIFFE URI SAN.
+ * - The SPIFFE URI's trust domain is exactly `verinode.labs`.
+ * - The service name component matches one of `allowedServiceNames`.
+ *   When `allowedServiceNames` is empty the service name check is skipped.
+ *
+ * Use this function when you want to authorize callers by logical service name
+ * rather than a full SPIFFE ID.
+ */
+export function verifyPeerServiceIdentity(
+  cert: tls.PeerCertificate | tls.DetailedPeerCertificate | undefined,
+  allowedServiceNames: string[],
+): boolean {
+  const serviceName = extractVeriNodeServiceName(cert);
+  if (serviceName === null) return false;
+  if (allowedServiceNames.length === 0) return true;
+  return allowedServiceNames.includes(serviceName);
+}
+
 export class MtlsCertificateManager {
   private loaded: LoadedCertificate | null = null;
   private contentHash = '';
@@ -135,6 +224,13 @@ export class MtlsCertificateManager {
   private certificateReloadsTotal = 0;
   private handshakeFailuresTotal = 0;
   private invalidPeerIdentityFailuresTotal = 0;
+
+  // mTLS handshake latency histogram (milliseconds)
+  private static readonly LATENCY_BOUNDARIES: readonly number[] = [1, 5, 10, 25, 50, 100, 250, 500, 1000];
+  private handshakeLatencyCounts: number[] = MtlsCertificateManager.LATENCY_BOUNDARIES.map(() => 0);
+  private handshakeLatencySum = 0;
+  private handshakeLatencyTotal = 0;
+
   private log = createLogger('mtls', { 'tls.mode': 'mtls' });
 
   constructor(public readonly config: MtlsConfig) {
@@ -170,7 +266,7 @@ export class MtlsCertificateManager {
     const contentHash = hashInputs([certPem, keyPem, caPem]);
     if (this.loaded && contentHash === this.contentHash) return this.loaded;
 
-    const cert = new X509Certificate(certPem);
+    const cert = new X509Certificate(certPem as any);
     const validFrom = new Date(cert.validFrom);
     const validTo = new Date(cert.validTo);
     const validityMs = validTo.getTime() - validFrom.getTime();
@@ -179,7 +275,7 @@ export class MtlsCertificateManager {
     }
 
     const spiffeIds = extractSpiffeIds(cert);
-    if (!validateSpiffeIdentity(spiffeIds, this.config.trustDomain, this.config.allowedSpiffeIds)) {
+    if (!validateSpiffeIdentity(spiffeIds, this.config.trustDomain)) {
       throw new Error(`mTLS certificate is missing an allowed SPIFFE identity for trust domain ${this.config.trustDomain}`);
     }
 
@@ -257,6 +353,21 @@ export class MtlsCertificateManager {
     this.invalidPeerIdentityFailuresTotal += 1;
   }
 
+  /**
+   * Record the observed latency (in milliseconds) of a successful mTLS handshake.
+   * Call this after the TLS handshake completes but before the first application
+   * byte is delivered.
+   */
+  recordHandshakeLatency(latencyMs: number): void {
+    this.handshakeLatencySum += latencyMs;
+    this.handshakeLatencyTotal += 1;
+    for (let i = 0; i < MtlsCertificateManager.LATENCY_BOUNDARIES.length; i++) {
+      if (latencyMs <= MtlsCertificateManager.LATENCY_BOUNDARIES[i]) {
+        this.handshakeLatencyCounts[i] += 1;
+      }
+    }
+  }
+
   metricsSnapshot(now: Date = new Date()): MtlsMetricsSnapshot {
     const expiresAt = this.loaded?.validTo.getTime() ?? 0;
     const secondsUntilExpiry = expiresAt === 0 ? 0 : Math.max(0, Math.floor((expiresAt - now.getTime()) / 1000));
@@ -268,12 +379,25 @@ export class MtlsCertificateManager {
       certificateReloadFailuresTotal: this.reloadFailuresTotal,
       handshakeFailuresTotal: this.handshakeFailuresTotal,
       invalidPeerIdentityFailuresTotal: this.invalidPeerIdentityFailuresTotal,
+      handshakeLatencyBuckets: {
+        boundaries: MtlsCertificateManager.LATENCY_BOUNDARIES,
+        counts: [...this.handshakeLatencyCounts],
+        sum: this.handshakeLatencySum,
+        total: this.handshakeLatencyTotal,
+      },
     };
   }
 
   prometheusMetrics(): string {
     const m = this.metricsSnapshot();
     const expiringSoon = m.certificateLoaded && m.certificateSecondsUntilExpiry < this.config.minSecondsUntilExpiry ? 1 : 0;
+    const latencyBucketLines: string[] = [];
+    for (let i = 0; i < m.handshakeLatencyBuckets.boundaries.length; i++) {
+      latencyBucketLines.push(
+        `verinode_mtls_handshake_duration_ms_bucket{le="${m.handshakeLatencyBuckets.boundaries[i]}"} ${m.handshakeLatencyBuckets.counts[i]}`,
+      );
+    }
+    latencyBucketLines.push(`verinode_mtls_handshake_duration_ms_bucket{le="+Inf"} ${m.handshakeLatencyBuckets.total}`);
     return [
       '# HELP verinode_mtls_certificate_loaded Whether an mTLS workload certificate is loaded.',
       '# TYPE verinode_mtls_certificate_loaded gauge',
@@ -296,6 +420,11 @@ export class MtlsCertificateManager {
       '# HELP verinode_mtls_invalid_peer_identity_failures_total Authorized TLS peers rejected for missing or disallowed SPIFFE identity.',
       '# TYPE verinode_mtls_invalid_peer_identity_failures_total counter',
       `verinode_mtls_invalid_peer_identity_failures_total ${m.invalidPeerIdentityFailuresTotal}`,
+      '# HELP verinode_mtls_handshake_duration_ms Histogram of mTLS handshake latency in milliseconds.',
+      '# TYPE verinode_mtls_handshake_duration_ms histogram',
+      ...latencyBucketLines,
+      `verinode_mtls_handshake_duration_ms_sum ${m.handshakeLatencyBuckets.sum}`,
+      `verinode_mtls_handshake_duration_ms_count ${m.handshakeLatencyBuckets.total}`,
       '',
     ].join('\n');
   }

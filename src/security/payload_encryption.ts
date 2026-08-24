@@ -107,10 +107,10 @@ export class PayloadEncryptionService {
     const activeKey = await this.options.keyProvider.getActiveKey();
     const key = normalizeKey(activeKey.key);
     const nonce = randomBytes(NONCE_BYTES);
-    const cipher = createCipheriv(ALGORITHM, key, nonce, { authTagLength: TAG_BYTES });
-    cipher.setAAD(this.aad(activeKey.keyId, fieldPath));
+    const cipher = createCipheriv(ALGORITHM, key as any, nonce as any, { authTagLength: TAG_BYTES });
+    cipher.setAAD(this.aad(activeKey.keyId, fieldPath) as any);
     const plaintext = Buffer.from(JSON.stringify(value), 'utf8');
-    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const ciphertext = Buffer.concat([cipher.update(plaintext as any) as any, cipher.final() as any]);
     return { [MARKER]: true, version: ENVELOPE_VERSION, alg: 'AES-256-GCM', keyId: activeKey.keyId, nonce: nonce.toString('base64url'), ciphertext: ciphertext.toString('base64url'), tag: cipher.getAuthTag().toString('base64url') } satisfies EncryptedFieldEnvelope;
   }
 
@@ -118,10 +118,10 @@ export class PayloadEncryptionService {
     if (!isEncryptedEnvelope(value)) return value;
     const encryptionKey = await this.options.keyProvider.getKey(value.keyId);
     if (!encryptionKey) throw new Error(`No payload encryption key found for keyId ${value.keyId}`);
-    const decipher = createDecipheriv(ALGORITHM, normalizeKey(encryptionKey.key), Buffer.from(value.nonce, 'base64url'), { authTagLength: TAG_BYTES });
-    decipher.setAAD(this.aad(value.keyId, fieldPath));
-    decipher.setAuthTag(Buffer.from(value.tag, 'base64url'));
-    const plaintext = Buffer.concat([decipher.update(Buffer.from(value.ciphertext, 'base64url')), decipher.final()]);
+    const decipher = createDecipheriv(ALGORITHM, normalizeKey(encryptionKey.key) as any, Buffer.from(value.nonce, 'base64url') as any, { authTagLength: TAG_BYTES });
+    decipher.setAAD(this.aad(value.keyId, fieldPath) as any);
+    decipher.setAuthTag(Buffer.from(value.tag, 'base64url') as any);
+    const plaintext = Buffer.concat([decipher.update(Buffer.from(value.ciphertext, 'base64url') as any) as any, decipher.final() as any]);
     return JSON.parse(plaintext.toString('utf8'));
   }
 
@@ -139,7 +139,7 @@ function parsePath(path: string): string[] {
 function normalizeKey(key: Buffer | string): Buffer {
   const raw = Buffer.isBuffer(key) ? key : Buffer.from(key, 'base64');
   if (raw.length === KEY_BYTES) return raw;
-  return createHash('sha256').update(raw).digest();
+  return createHash('sha256').update(raw as any).digest();
 }
 
 function isObject(value: unknown): value is JsonObject { return typeof value === 'object' && value !== null && !Array.isArray(value); }
@@ -149,5 +149,5 @@ export function isEncryptedEnvelope(value: unknown): value is EncryptedFieldEnve
   if (!isObject(value)) return false;
   const marker = value[MARKER];
   if (typeof marker !== 'boolean') return false;
-  return timingSafeEqual(Buffer.from(marker ? '1' : '0'), Buffer.from('1')) && value.version === ENVELOPE_VERSION && value.alg === 'AES-256-GCM' && typeof value.keyId === 'string' && typeof value.nonce === 'string' && typeof value.ciphertext === 'string' && typeof value.tag === 'string';
+  return timingSafeEqual(Buffer.from(marker ? '1' : '0') as any, Buffer.from('1') as any) && value.version === ENVELOPE_VERSION && value.alg === 'AES-256-GCM' && typeof value.keyId === 'string' && typeof value.nonce === 'string' && typeof value.ciphertext === 'string' && typeof value.tag === 'string';
 }

@@ -12,7 +12,7 @@ const requiredSnippets = [
   'strategy:',
   'fail-fast: false',
   'CodeQL analyze',
-  'pnpm audit --prod --audit-level high',
+  'npm audit --omit=dev --audit-level high',
   'docker/build-push-action@v6',
   'CI complete',
 ];

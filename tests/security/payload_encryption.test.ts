@@ -29,7 +29,8 @@ async function main(): Promise<void> {
   assert.deepStrictEqual(decrypted, payload);
 
   const tampered = await service.encryptPayload(payload);
-  (tampered.user.ssn as any).ciphertext = (tampered.user.ssn as any).ciphertext.replace(/.$/, 'A');
+  const ct = (tampered.user.ssn as any).ciphertext;
+  (tampered.user.ssn as any).ciphertext = ct.endsWith('A') ? ct.replace(/.$/, 'B') : ct.replace(/.$/, 'A');
   await assert.rejects(() => service.decryptPayload(tampered));
 }
 

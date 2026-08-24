@@ -25,6 +25,8 @@ spec:
     tls:
       mode: ISTIO_MUTUAL
 ---
+# Allow calls from any VeriNode service that presents a valid SPIFFE identity
+# under either the verinode.labs trust domain or the cluster.local mesh identity.
 apiVersion: security.istio.io/v1beta1
 kind: AuthorizationPolicy
 metadata:
@@ -35,5 +37,13 @@ spec:
   rules:
     - from:
         - source:
+            # cluster.local SPIFFE IDs issued by the mesh sidecar CA
             principals:
               - cluster.local/ns/verinode/sa/verinode-backend
+    - from:
+        - source:
+            # verinode.labs SPIFFE IDs issued by the internal step-ca / SPIRE agent.
+            # Format: spiffe://verinode.labs/{service_name}/{pod_id}
+            # The principal prefix match covers all pod IDs for the service.
+            requestPrincipals:
+              - "spiffe://verinode.labs/*"
